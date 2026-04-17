@@ -20,6 +20,7 @@ from .const import (
     CONF_TRACKER,
     CONF_ZONE_ID,
 )
+from .events import async_fire_alert_events, async_fire_stale_data_event
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ class AlertsDataUpdateCoordinator(DataUpdateCoordinator):
         self._session = session
         self._user_agent = user_agent
         self.hass = hass
+        self._previous_alerts: dict[str, dict] = {}
+        self._last_successful_update: str | None = None
 
         _LOGGER.debug("Data will be update every %s", self.interval)
 
@@ -67,7 +70,9 @@ class AlertsDataUpdateCoordinator(DataUpdateCoordinator):
                 # Return valid structure instead of None
                 return {"state": 0, "alerts": [], "last_updated": datetime.now().isoformat()}
             except Exception as error:
+                await async_fire_stale_data_event(self.hass, self._last_successful_update)
                 raise UpdateFailed(error) from error
+            await async_fire_alert_events(self.hass, self, data)
             _LOGGER.debug("Data: %s", data)
             return data
 
@@ -177,6 +182,11 @@ class AlertsDataUpdateCoordinator(DataUpdateCoordinator):
                     tmp_dict["AreasAffected"] = alert["properties"]["areaDesc"]
                     tmp_dict["Description"] = alert["properties"]["description"]
                     tmp_dict["Instruction"] = alert["properties"]["instruction"]
+                    tmp_dict["Urgency"] = alert["properties"].get("urgency", "Unknown")
+                    tmp_dict["Response"] = alert["properties"].get("response", "Monitor")
+                    tmp_dict["SenderName"] = alert["properties"].get("senderName", "")
+                    tmp_dict["Effective"] = alert["properties"].get("effective", "")
+                    tmp_dict["FormattedHeadline"] = alert["properties"].get("headline", "")
 
                     alert_list.append(tmp_dict)
                 except (KeyError, TypeError) as error:

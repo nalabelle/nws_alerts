@@ -1,0 +1,270 @@
+#################################################################################
+#
+#   NWS ALERTS EVENT-DRIVEN AUTOMATION PACKAGE
+#
+#   This is an alternative to the state-change-based v6+ package. Instead of
+#   comparing trigger.from_state.attributes.Alerts to trigger.to_state.attributes.Alerts
+#   using Jinja2 templates, this package uses custom events fired directly by the
+#   nws_alerts integration fork:
+#
+#     - nws_alerts_alert_created  : fired when a new alert appears
+#     - nws_alerts_alert_updated  : fired when an existing alert's data changes
+#     - nws_alerts_alert_cleared  : fired when an alert is no longer active
+#     - nws_alerts_alert_stale_data : fired when the NWS API fetch fails
+#
+#   Event data includes all alert fields: Event, ID, URL, Headline, Type, NWSCode,
+#   Status, Severity, Certainty, Urgency, Response, SenderName, Sent, Onset, Expires,
+#   Ends, Effective, AreasAffected, Description, Instruction, FormattedHeadline.
+#
+#   IMPORTANT: This package requires the fork version of nws_alerts that fires these
+#   events. If you are using the upstream version, use the v6+ package instead.
+#
+#   The entity_id below (sensor.nws_alerts_alerts) assumes the default name "NWS Alerts".
+#   If you changed the name during setup, adjust the entity_id accordingly.
+#
+#################################################################################
+
+######################## BINARY SENSOR  #########################################
+
+binary_sensor:
+  - platform: template
+    sensors:
+      nws_alerts_are_active:
+        friendly_name: NWS Alerts Are Active
+        value_template: >
+          {{ states('sensor.nws_alerts_alerts') | int(0) > 0 }}
+        icon_template: >-
+          {% if states('sensor.nws_alerts_alerts') | int(0) > 0 %}
+            mdi:weather-lightning
+          {% else %}
+            mdi:weather-sunny
+          {% endif %}
+
+
+########################  AUTOMATIONS  ##########################################
+
+automation:
+
+  - alias: NWS - Alert Created
+    id: nws_alert_created
+    description: Send notifications when a new NWS alert is issued
+    trigger:
+      - trigger: event
+        event_type: nws_alerts_alert_created
+    action:
+      - action: persistent_notification.create
+        data:
+          notification_id: "NWS_{{ trigger.event.data.ID }}"
+          title: "NWS Alert: {{ trigger.event.data.Event }}"
+          message: "{{ trigger.event.data.Description }}"
+      - action: script.turn_on
+        continue_on_error: true
+        entity_id: script.notification_pushover_message
+        data:
+          variables:
+            target: my_phone
+            message: "NWS Alert: {{ trigger.event.data.Event }}"
+            sound: echo
+      - delay:
+          seconds: 5
+    mode: queued
+    max: 10
+
+###############################################################################
+
+  - alias: NWS - Alert Updated
+    id: nws_alert_updated
+    description: Update persistent notification when an NWS alert changes
+    trigger:
+      - trigger: event
+        event_type: nws_alerts_alert_updated
+    action:
+      - action: persistent_notification.create
+        data:
+          notification_id: "NWS_{{ trigger.event.data.ID }}"
+          title: "NWS Update: {{ trigger.event.data.Event }}"
+          message: "{{ trigger.event.data.Description }}"
+    mode: queued
+    max: 10
+
+###############################################################################
+
+  - alias: NWS - Alert Cleared
+    id: nws_alert_cleared
+    description: Dismiss persistent notification when an NWS alert is no longer active
+    trigger:
+      - trigger: event
+        event_type: nws_alerts_alert_cleared
+    action:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: "NWS_{{ trigger.event.data.ID }}"
+    mode: queued
+    max: 10
+
+###############################################################################
+
+  # Uncomment this automation if you want to be notified when the NWS API
+  # is unreachable and alert data may be stale. The event_data includes
+  # last_successful - the ISO timestamp of the last successful update,
+  # or null if the integration has never successfully fetched data.
+  #
+  # - alias: NWS - Stale Data Warning
+  #   id: nws_alert_stale_data_warning
+  #   description: Warn when NWS alert data may be stale due to API failure
+  #   trigger:
+  #     - trigger: event
+  #       event_type: nws_alerts_alert_stale_data
+  #   action:
+  #     - action: persistent_notification.create
+  #       data:
+  #         notification_id: nws_stale_data_warning
+  #         title: "NWS Alerts: Data May Be Stale"
+  #         message: >
+  #           The NWS Alerts integration was unable to fetch updated data.
+  #           Last successful update: {{ trigger.event.data.last_successful or 'Never' }}
+
+###############################################################################
+
+## I am using the Alexa Media Player custom integration to play the announcement.
+## If you don't use that integration you may have to adjust the service call for your system.
+##
+## TTS announcements only fire for new alerts (Type == 'Alert') to avoid re-announcing
+## updates. Modify the conditions to add more event types if desired.
+
+  - alias: NWS - TTS Announcements
+    id: nws_tts_announcements
+    description: Announce severe weather alerts via TTS
+    trigger:
+      - trigger: event
+        event_type: nws_alerts_alert_created
+    condition:
+      - condition: template
+        value_template: "{{ trigger.event.data.Type == 'Alert' }}"
+    action:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ 'Tornado Warning' in trigger.event.data.Event }}"
+            sequence:
+              - action: script.turn_on
+                entity_id: script.nws_alerts_announce_tornado_warning
+              - delay:
+                  minutes: 1
+          - conditions:
+              - condition: template
+                value_template: "{{ 'Severe Thunderstorm Warning' in trigger.event.data.Event }}"
+            sequence:
+              - action: script.turn_on
+                entity_id: script.nws_alerts_announce_thunderstorm_warning
+              - delay:
+                  minutes: 1
+    mode: queued
+    max: 10
+
+#################################  SCRIPTS  ###################################
+
+script:
+  nws_alerts_announce_tornado_warning:
+    alias: NWS Alerts Announce Tornado Warning
+    sequence:
+      - action: media_player.volume_set
+        data:
+          entity_id:
+            - media_player.basement_dot
+            - media_player.bedroom_2_dot
+            - media_player.computer_room_dot
+            - media_player.garage_dot
+            - media_player.kitchen_dot
+            - media_player.livingroom_dot
+            - media_player.master_bedroom_dot
+          volume_level: 0.9
+      - action: notify.alexa_media
+        data:
+          target:
+            - media_player.basement_dot
+            - media_player.bedroom_2_dot
+            - media_player.computer_room_dot
+            - media_player.garage_dot
+            - media_player.kitchen_dot
+            - media_player.livingroom_dot
+            - media_player.master_bedroom_dot
+          data:
+            type: tts
+          message: Attention!,,,Attention!,,,The National Weather Service Has issued a tornado warning for our area.
+      - delay: '00:00:15'
+      - action: notify.alexa_media
+        data:
+          message: "<audio src='https://your_remote_access.ui.nabu.casa/local/mp3/nws_alert_tone.mp3' />"
+          target:
+            - media_player.basement_dot
+            - media_player.bedroom_2_dot
+            - media_player.computer_room_dot
+            - media_player.garage_dot
+            - media_player.kitchen_dot
+            - media_player.livingroom_dot
+            - media_player.master_bedroom_dot
+          data:
+            type: tts
+      - delay: '00:00:25'
+      - action: notify.alexa_media
+        data:
+          target:
+            - media_player.basement_dot
+            - media_player.bedroom_2_dot
+            - media_player.computer_room_dot
+            - media_player.garage_dot
+            - media_player.kitchen_dot
+            - media_player.livingroom_dot
+            - media_player.master_bedroom_dot
+          data:
+            type: tts
+          message: Attention!,,,Attention!,,,The National Weather Service Has issued a tornado warning for our area.
+
+  nws_alerts_announce_thunderstorm_warning:
+    alias: NWS Alerts Announce Severe Thunderstorm Warning
+    sequence:
+      - action: media_player.volume_set
+        data:
+          entity_id:
+            - media_player.basement_dot
+            - media_player.computer_room_dot
+            - media_player.garage_dot
+            - media_player.kitchen_dot
+            - media_player.livingroom_dot
+          volume_level: 0.9
+      - action: notify.alexa_media
+        data:
+          target:
+            - media_player.basement_dot
+            - media_player.computer_room_dot
+            - media_player.garage_dot
+            - media_player.kitchen_dot
+            - media_player.livingroom_dot
+          data:
+            type: tts
+          message: Attention!,,,Attention!,,,The National Weather Service Has issued a severe thunderstorm warning for our area.
+      - delay: '00:00:15'
+      - action: notify.alexa_media
+        data:
+          message: "<audio src='https://your_remote_access.ui.nabu.casa/local/mp3/nws_alert_tone.mp3' />"
+          target:
+            - media_player.basement_dot
+            - media_player.computer_room_dot
+            - media_player.garage_dot
+            - media_player.kitchen_dot
+            - media_player.livingroom_dot
+          data:
+            type: tts
+      - delay: '00:00:25'
+      - action: notify.alexa_media
+        data:
+          target:
+            - media_player.basement_dot
+            - media_player.computer_room_dot
+            - media_player.garage_dot
+            - media_player.kitchen_dot
+            - media_player.livingroom_dot
+          data:
+            type: tts
+          message: Attention!,,,Attention!,,,The National Weather Service Has issued a severe thunderstorm warning for our area.
