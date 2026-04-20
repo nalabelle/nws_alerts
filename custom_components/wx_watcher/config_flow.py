@@ -1,12 +1,5 @@
 """Adds config flow for WX Watcher."""
 
-# Derived in part from nws_alerts by finity69x2
-# (https://github.com/finity69x2/nws_alerts).
-# ConfigFlow/OptionsFlow class pattern and tracker entity listing originate
-# from the upstream config flow. See NOTICE for details.
-# As upstream-derived code is rewritten or removed, this comment should
-# be updated or removed accordingly.
-
 from __future__ import annotations
 
 import logging
@@ -15,7 +8,6 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.components.device_tracker.const import DOMAIN as TRACKER_DOMAIN
 from homeassistant.config_entries import ConfigEntry, ConfigFlowResult
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
@@ -33,8 +25,8 @@ from .api import resolve_zones
 from .const import (
     CONF_INTERVAL,
     CONF_LOCATION_GPS,
+    CONF_LOCATION_HA_ZONE,
     CONF_LOCATION_MODE,
-    CONF_LOCATION_NAME,
     CONF_LOCATION_TRACKER,
     CONF_LOCATION_TYPE,
     CONF_LOCATION_ZONE,
@@ -54,40 +46,190 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-
-def _get_tracker_entities(hass: HomeAssistant) -> list[str]:
-    """Get list of device tracker entity IDs."""
-    data = ["(none)"]
-    entities = hass.states.async_entity_ids(TRACKER_DOMAIN)
-    data.extend(entities)
-    return data
+MODE_OPTIONS = [
+    SelectOptionDict(value=LOCATION_MODE_ZONE, label="Zone mode (broader coverage)"),
+    SelectOptionDict(value=LOCATION_MODE_POINT, label="Point mode (precise location)"),
+]
 
 
-def _get_ha_zone_entities(hass: HomeAssistant) -> list[SelectOptionDict]:
-    """Get list of HA zone entity IDs as select options."""
-    options = [SelectOptionDict(value="(none)", label="None")]
-    for entity_id in sorted(hass.states.async_entity_ids("zone")):
+def _hub_actions(done_label: str) -> list[SelectOptionDict]:
+    """Return action options for the locations menu."""
+    return [
+        SelectOptionDict(value="add_static", label="Add a static location"),
+        SelectOptionDict(value="add_tracked", label="Add a tracked device"),
+        SelectOptionDict(value="edit_location", label="Edit a location"),
+        SelectOptionDict(value="remove_location", label="Remove a location"),
+        SelectOptionDict(value="done", label=done_label),
+    ]
+
+
+def _location_display(hass: HomeAssistant, loc: dict[str, Any]) -> str:
+    """Return a human-readable label for a location."""
+    entity_id = loc.get(CONF_LOCATION_HA_ZONE) or loc.get(CONF_LOCATION_TRACKER, "")
+    state = hass.states.get(entity_id)
+    name = state.name if state else entity_id
+    return f"{name} ({loc[CONF_LOCATION_TYPE]}, {loc[CONF_LOCATION_MODE]})"
+
+
+def _location_list_str(hass: HomeAssistant, locations: list[dict[str, Any]]) -> str:
+    """Return a comma-separated summary of all locations."""
+    if not locations:
+        return "None"
+    return ", ".join(_location_display(hass, loc) for loc in locations)
+
+
+def _location_select_options(
+    hass: HomeAssistant, locations: list[dict[str, Any]]
+) -> list[SelectOptionDict]:
+    """Return select options for the location picker."""
+    options = []
+    for i, loc in enumerate(locations):
+        entity_id = loc.get(CONF_LOCATION_HA_ZONE) or loc.get(CONF_LOCATION_TRACKER, "")
         state = hass.states.get(entity_id)
-        label = entity_id
-        if state:
-            label = f"{state.name} ({entity_id})"
-        options.append(SelectOptionDict(value=entity_id, label=label))
+        name = state.name if state else entity_id
+        loc_type = "static" if loc[CONF_LOCATION_TYPE] == LOCATION_TYPE_STATIC else "tracked"
+        label = f"{name} ({loc_type}, {loc[CONF_LOCATION_MODE]})"
+        options.append(SelectOptionDict(value=str(i), label=label))
     return options
 
 
+def _dedupe_zone_str(zone_str: str) -> str:
+    """Deduplicate and sort comma-separated zone IDs."""
+    zones = sorted({z.strip() for z in zone_str.split(",") if z.strip()})
+    return ",".join(zones)
+
+
+def _static_schema(
+    ha_zone_default: str | None = None,
+    mode_default: str = LOCATION_MODE_ZONE,
+    zone_default: str = "",
+) -> vol.Schema:
+    """Return a voluptuous schema for the static-location form."""
+    return vol.Schema(
+        {
+            vol.Required(CONF_LOCATION_HA_ZONE, default=ha_zone_default): EntitySelector(
+                EntitySelectorConfig(domain="zone")
+            ),
+            vol.Required(CONF_LOCATION_MODE, default=mode_default): SelectSelector(
+                SelectSelectorConfig(options=MODE_OPTIONS)
+            ),
+            vol.Optional(CONF_LOCATION_ZONE, default=zone_default): str,
+        }
+    )
+
+
+def _tracked_schema(
+    tracker_default: str | None = None,
+    mode_default: str = LOCATION_MODE_ZONE,
+) -> vol.Schema:
+    """Return a voluptuous schema for the tracked-device form."""
+    return vol.Schema(
+        {
+            vol.Required(CONF_LOCATION_TRACKER, default=tracker_default): EntitySelector(
+                EntitySelectorConfig(domain="device_tracker")
+            ),
+            vol.Required(CONF_LOCATION_MODE, default=mode_default): SelectSelector(
+                SelectSelectorConfig(options=MODE_OPTIONS)
+            ),
+        }
+    )
+
+
+async def _validate_static(
+    hass: HomeAssistant, user_input: dict[str, Any]
+) -> tuple[dict[str, Any] | None, dict[str, str], dict[str, Any]]:
+    """Validate a static location submission.
+
+    Returns (location_dict | None, errors, form_data).
+    """
+    errors: dict[str, str] = {}
+    ha_zone = user_input.get(CONF_LOCATION_HA_ZONE, "")
+    mode = user_input[CONF_LOCATION_MODE]
+    zone_str = user_input.get(CONF_LOCATION_ZONE, "")
+    gps = ""
+
+    state = hass.states.get(ha_zone)
+    if not state:
+        errors["base"] = "no_zone_selected"
+    elif "latitude" not in state.attributes or "longitude" not in state.attributes:
+        errors["base"] = "zone_no_gps"
+    else:
+        gps = f"{state.attributes['latitude']},{state.attributes['longitude']}"
+
+    if not errors and mode == LOCATION_MODE_ZONE and not zone_str:
+        instance_id = await async_get_instance_id(hass)
+        user_agent = USER_AGENT.format(instance_id)
+        session = async_get_clientsession(hass)
+        lat_str, lon_str = gps.split(",")
+        zones = await resolve_zones(session, user_agent, float(lat_str), float(lon_str))
+        if zones:
+            zone_str = ",".join(zones)
+        else:
+            errors["base"] = "zone_resolve_failed"
+
+    if not errors:
+        location = {
+            CONF_LOCATION_TYPE: LOCATION_TYPE_STATIC,
+            CONF_LOCATION_MODE: mode,
+            CONF_LOCATION_GPS: gps,
+            CONF_LOCATION_ZONE: _dedupe_zone_str(zone_str),
+            CONF_LOCATION_HA_ZONE: ha_zone,
+        }
+        return location, errors, {}
+
+    return (
+        None,
+        errors,
+        {
+            CONF_LOCATION_HA_ZONE: ha_zone,
+            CONF_LOCATION_MODE: mode,
+            CONF_LOCATION_ZONE: zone_str,
+        },
+    )
+
+
+def _validate_tracked(
+    hass: HomeAssistant, user_input: dict[str, Any]
+) -> tuple[dict[str, Any] | None, dict[str, str]]:
+    """Validate a tracked-device submission.
+
+    Returns (location_dict | None, errors).
+    """
+    errors: dict[str, str] = {}
+    tracker = user_input.get(CONF_LOCATION_TRACKER, "")
+    mode = user_input[CONF_LOCATION_MODE]
+
+    state = hass.states.get(tracker)
+    if not state:
+        errors["base"] = "tracker_not_found"
+
+    if not errors:
+        location = {
+            CONF_LOCATION_TYPE: LOCATION_TYPE_TRACKED,
+            CONF_LOCATION_MODE: mode,
+            CONF_LOCATION_GPS: "",
+            CONF_LOCATION_ZONE: "",
+            CONF_LOCATION_TRACKER: tracker,
+        }
+        return location, errors
+
+    return None, errors
+
+
 class WXWatcherFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
-    """Config flow for WX Watcher."""
+    """Handle a config flow for WX Watcher."""
 
     VERSION = CONFIG_VERSION
 
     def __init__(self) -> None:
-        """Initialize."""
+        """Initialize the config flow handler."""
         self._data: dict[str, Any] = {}
         self._locations: list[dict[str, Any]] = []
         self._errors: dict[str, str] = {}
+        self._edit_index: int = -1
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Handle the initial step — entry name and settings."""
+        """Handle the initial user step."""
         if user_input is not None:
             self._data[CONF_NAME] = user_input[CONF_NAME]
             self._data[CONF_INTERVAL] = user_input.get(CONF_INTERVAL, DEFAULT_INTERVAL)
@@ -109,396 +251,407 @@ class WXWatcherFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_locations(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Hub page showing current locations and add/done buttons."""
+        """Handle the locations menu step."""
         if user_input is not None:
             action = user_input.get("action")
             if action == "add_static":
                 return await self.async_step_add_static()
             if action == "add_tracked":
                 return await self.async_step_add_tracked()
+            if action == "edit_location":
+                return await self.async_step_edit_location()
+            if action == "remove_location":
+                return await self.async_step_remove_location()
             if action == "done":
                 return self._create_entry()
-
-        location_list = (
-            ", ".join(
-                f"{loc[CONF_LOCATION_NAME]} ({loc[CONF_LOCATION_TYPE]}, {loc[CONF_LOCATION_MODE]})"
-                for loc in self._locations
-            )
-            if self._locations
-            else "None"
-        )
 
         return self.async_show_form(
             step_id="locations",
             data_schema=vol.Schema(
                 {
                     vol.Required("action"): SelectSelector(
-                        SelectSelectorConfig(
-                            options=[
-                                SelectOptionDict(value="add_static", label="Add a static location"),
-                                SelectOptionDict(value="add_tracked", label="Add a tracked device"),
-                                SelectOptionDict(value="done", label="Done — finish setup"),
-                            ],
-                        )
+                        SelectSelectorConfig(options=_hub_actions("Done — finish setup"))
                     ),
                 }
             ),
-            description_placeholders={"location_list": location_list},
+            description_placeholders={
+                "location_list": _location_list_str(self.hass, self._locations),
+            },
         )
 
     async def async_step_add_static(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle adding a static location."""
-        errors: dict[str, str] = {}
-
         if user_input is not None:
-            name = user_input[CONF_LOCATION_NAME]
-            mode = user_input[CONF_LOCATION_MODE]
-            source = user_input.get("source", "manual_gps")
-            zone_str = ""
-            gps = ""
-
-            if source == "ha_zone":
-                ha_zone = user_input.get("ha_zone", "(none)")
-                if ha_zone == "(none)":
-                    errors["ha_zone"] = "no_zone_selected"
-                else:
-                    state = self.hass.states.get(ha_zone)
-                    if state and "latitude" in state.attributes and "longitude" in state.attributes:
-                        gps = f"{state.attributes['latitude']},{state.attributes['longitude']}"
-                    else:
-                        errors["ha_zone"] = "zone_no_gps"
-
-            if source == "manual_gps":
-                gps = user_input.get(CONF_LOCATION_GPS, "").replace(" ", "")
-
-            if not errors:
-                if mode == LOCATION_MODE_ZONE and gps:
-                    instance_id = await async_get_instance_id(self.hass)
-                    user_agent = USER_AGENT.format(instance_id)
-                    session = async_get_clientsession(self.hass)
-                    lat_str, lon_str = gps.split(",")
-                    zones = await resolve_zones(session, user_agent, float(lat_str), float(lon_str))
-                    if zones:
-                        zone_str = ",".join(zones)
-                    else:
-                        errors["base"] = "zone_resolve_failed"
-
-                if mode == LOCATION_MODE_ZONE and not gps and not zone_str:
-                    if source == "manual_zone":
-                        zone_str = user_input.get(CONF_LOCATION_ZONE, "").replace(" ", "")
-                    if not zone_str:
-                        errors["base"] = "no_zone_or_gps"
-
-            if not errors:
-                if source == "manual_zone":
-                    zone_str = user_input.get(CONF_LOCATION_ZONE, "").replace(" ", "")
-
-                location: dict[str, Any] = {
-                    CONF_LOCATION_NAME: name,
-                    CONF_LOCATION_TYPE: LOCATION_TYPE_STATIC,
-                    CONF_LOCATION_MODE: mode,
-                    CONF_LOCATION_GPS: gps,
-                    CONF_LOCATION_ZONE: zone_str,
-                }
-                if source == "ha_zone":
-                    location["ha_zone"] = user_input.get("ha_zone", "")
+            location, errors, form_data = await _validate_static(self.hass, user_input)
+            if location:
                 self._locations.append(location)
                 return await self.async_step_locations()
-
-        source_options = [
-            SelectOptionDict(value="ha_zone", label="Home Assistant zone"),
-            SelectOptionDict(value="manual_gps", label="Manual GPS coordinates"),
-            SelectOptionDict(value="manual_zone", label="Manual NWS zone IDs"),
-        ]
-        mode_options = [
-            SelectOptionDict(value=LOCATION_MODE_ZONE, label="Zone mode (broader coverage)"),
-            SelectOptionDict(value=LOCATION_MODE_POINT, label="Point mode (precise location)"),
-        ]
-
-        schema_dict: dict[vol.Marker, Any] = {
-            vol.Required(CONF_LOCATION_NAME): str,
-            vol.Required("source", default="ha_zone"): SelectSelector(
-                SelectSelectorConfig(options=source_options)
-            ),
-            vol.Required(CONF_LOCATION_MODE, default=LOCATION_MODE_ZONE): SelectSelector(
-                SelectSelectorConfig(options=mode_options)
-            ),
-        }
-        schema_dict[vol.Optional(CONF_LOCATION_GPS, default="")] = str
-        schema_dict[vol.Optional(CONF_LOCATION_ZONE, default="")] = str
-        schema_dict[vol.Optional("ha_zone", default="(none)")] = EntitySelector(
-            EntitySelectorConfig(domain="zone")
-        )
+            return self.async_show_form(
+                step_id="add_static",
+                data_schema=_static_schema(
+                    ha_zone_default=form_data.get(CONF_LOCATION_HA_ZONE),
+                    mode_default=form_data.get(CONF_LOCATION_MODE, LOCATION_MODE_ZONE),
+                    zone_default=form_data.get(CONF_LOCATION_ZONE, ""),
+                ),
+                errors=errors,
+            )
 
         return self.async_show_form(
             step_id="add_static",
-            data_schema=vol.Schema(schema_dict),
-            errors=errors,
+            data_schema=_static_schema(),
         )
 
     async def async_step_add_tracked(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle adding a tracked device location."""
-        errors: dict[str, str] = {}
-
+        """Handle adding a tracked device."""
         if user_input is not None:
-            name = user_input[CONF_LOCATION_NAME]
-            tracker = user_input.get(CONF_LOCATION_TRACKER, "(none)")
-            mode = user_input[CONF_LOCATION_MODE]
-
-            if tracker == "(none)":
-                errors["tracker"] = "no_tracker_selected"
-            else:
-                state = self.hass.states.get(tracker)
-                if state is None:
-                    errors["tracker"] = "tracker_not_found"
-
-            if not errors:
-                location: dict[str, Any] = {
-                    CONF_LOCATION_NAME: name,
-                    CONF_LOCATION_TYPE: LOCATION_TYPE_TRACKED,
-                    CONF_LOCATION_MODE: mode,
-                    CONF_LOCATION_GPS: "",
-                    CONF_LOCATION_ZONE: "",
-                    CONF_LOCATION_TRACKER: tracker,
-                }
+            location, errors = _validate_tracked(self.hass, user_input)
+            if location:
                 self._locations.append(location)
                 return await self.async_step_locations()
-
-        tracker_entities = _get_tracker_entities(self.hass)
-        mode_options = [
-            SelectOptionDict(value=LOCATION_MODE_ZONE, label="Zone mode (broader coverage)"),
-            SelectOptionDict(value=LOCATION_MODE_POINT, label="Point mode (precise location)"),
-        ]
-
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_LOCATION_NAME): str,
-                vol.Required(CONF_LOCATION_TRACKER, default="(none)"): vol.In(tracker_entities),
-                vol.Required(CONF_LOCATION_MODE, default=LOCATION_MODE_ZONE): SelectSelector(
-                    SelectSelectorConfig(options=mode_options)
-                ),
-            }
-        )
+            return self.async_show_form(
+                step_id="add_tracked",
+                data_schema=_tracked_schema(),
+                errors=errors,
+            )
 
         return self.async_show_form(
             step_id="add_tracked",
-            data_schema=schema,
-            errors=errors,
+            data_schema=_tracked_schema(),
+        )
+
+    async def async_step_edit_location(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle selecting a location to edit."""
+        if not self._locations:
+            return await self.async_step_locations()
+
+        if user_input is not None and "location_index" in user_input:
+            idx = int(user_input["location_index"])
+            if idx < 0 or idx >= len(self._locations):
+                return await self.async_step_locations()
+            self._edit_index = idx
+            loc = self._locations[idx]
+            if loc[CONF_LOCATION_TYPE] == LOCATION_TYPE_STATIC:
+                return self.async_show_form(
+                    step_id="edit_static",
+                    data_schema=_static_schema(
+                        ha_zone_default=loc.get(CONF_LOCATION_HA_ZONE),
+                        mode_default=loc[CONF_LOCATION_MODE],
+                        zone_default=loc.get(CONF_LOCATION_ZONE, ""),
+                    ),
+                )
+            return self.async_show_form(
+                step_id="edit_tracked",
+                data_schema=_tracked_schema(
+                    tracker_default=loc.get(CONF_LOCATION_TRACKER),
+                    mode_default=loc[CONF_LOCATION_MODE],
+                ),
+            )
+
+        return self.async_show_form(
+            step_id="edit_location",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("location_index"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=_location_select_options(self.hass, self._locations)
+                        )
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_edit_static(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle editing a static location."""
+        idx = self._edit_index
+        if idx < 0 or idx >= len(self._locations):
+            return await self.async_step_locations()
+
+        if user_input is not None:
+            location, errors, form_data = await _validate_static(self.hass, user_input)
+            if location:
+                self._locations[idx] = location
+                return await self.async_step_locations()
+            return self.async_show_form(
+                step_id="edit_static",
+                data_schema=_static_schema(
+                    ha_zone_default=form_data.get(CONF_LOCATION_HA_ZONE),
+                    mode_default=form_data.get(CONF_LOCATION_MODE, LOCATION_MODE_ZONE),
+                    zone_default=form_data.get(CONF_LOCATION_ZONE, ""),
+                ),
+                errors=errors,
+            )
+
+        return await self.async_step_locations()
+
+    async def async_step_edit_tracked(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle editing a tracked device."""
+        idx = self._edit_index
+        if idx < 0 or idx >= len(self._locations):
+            return await self.async_step_locations()
+
+        if user_input is not None:
+            location, errors = _validate_tracked(self.hass, user_input)
+            if location:
+                self._locations[idx] = location
+                return await self.async_step_locations()
+            return self.async_show_form(
+                step_id="edit_tracked",
+                data_schema=_tracked_schema(
+                    tracker_default=self._locations[idx].get(CONF_LOCATION_TRACKER),
+                    mode_default=self._locations[idx][CONF_LOCATION_MODE],
+                ),
+                errors=errors,
+            )
+
+        return await self.async_step_locations()
+
+    async def async_step_remove_location(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle removing a location."""
+        if not self._locations:
+            return await self.async_step_locations()
+
+        if user_input is not None and "location_index" in user_input:
+            idx = int(user_input["location_index"])
+            if 0 <= idx < len(self._locations):
+                self._locations.pop(idx)
+            return await self.async_step_locations()
+
+        return self.async_show_form(
+            step_id="remove_location",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("location_index"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=_location_select_options(self.hass, self._locations)
+                        )
+                    ),
+                }
+            ),
         )
 
     def _create_entry(self) -> ConfigFlowResult:
-        """Create the config entry."""
+        """Create the config entry from collected data."""
         self._data[CONF_LOCATIONS] = self._locations
         return self.async_create_entry(title=self._data[CONF_NAME], data=self._data)
 
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> WXWatcherOptionsFlow:
-        """Display options flow."""
+        """Return the options flow handler."""
         return WXWatcherOptionsFlow(config_entry)
 
 
 class WXWatcherOptionsFlow(config_entries.OptionsFlow):
-    """Options flow for WX Watcher."""
+    """Handle options flow for WX Watcher."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize."""
+        """Initialize the options flow handler."""
         self._config = config_entry
         self._data = dict(config_entry.data)
         self._locations: list[dict[str, Any]] = list(config_entry.data.get(CONF_LOCATIONS, []))
         self._errors: dict[str, str] = {}
+        self._edit_index: int = -1
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Manage options — locations hub."""
+        """Handle the options flow main menu."""
         if user_input is not None:
             action = user_input.get("action")
             if action == "add_static":
                 return await self.async_step_add_static()
             if action == "add_tracked":
                 return await self.async_step_add_tracked()
+            if action == "edit_location":
+                return await self.async_step_edit_location()
+            if action == "remove_location":
+                return await self.async_step_remove_location()
             if action == "done":
                 self._data[CONF_LOCATIONS] = self._locations
                 return self.async_create_entry(title="", data=self._data)
-
-        location_list = (
-            ", ".join(
-                f"{loc[CONF_LOCATION_NAME]} ({loc[CONF_LOCATION_TYPE]}, {loc[CONF_LOCATION_MODE]})"
-                for loc in self._locations
-            )
-            if self._locations
-            else "None"
-        )
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
                     vol.Required("action"): SelectSelector(
-                        SelectSelectorConfig(
-                            options=[
-                                SelectOptionDict(value="add_static", label="Add a static location"),
-                                SelectOptionDict(value="add_tracked", label="Add a tracked device"),
-                                SelectOptionDict(value="done", label="Done — save changes"),
-                            ],
-                        )
+                        SelectSelectorConfig(options=_hub_actions("Done — save changes"))
                     ),
                 }
             ),
-            description_placeholders={"location_list": location_list},
+            description_placeholders={
+                "location_list": _location_list_str(self.hass, self._locations),
+            },
         )
 
     async def async_step_add_static(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle adding a static location in options."""
-        return await self._handle_add_static(user_input)
+        """Handle adding a static location."""
+        if user_input is not None:
+            location, errors, form_data = await _validate_static(self.hass, user_input)
+            if location:
+                self._locations.append(location)
+                return await self.async_step_init()
+            return self.async_show_form(
+                step_id="add_static",
+                data_schema=_static_schema(
+                    ha_zone_default=form_data.get(CONF_LOCATION_HA_ZONE),
+                    mode_default=form_data.get(CONF_LOCATION_MODE, LOCATION_MODE_ZONE),
+                    zone_default=form_data.get(CONF_LOCATION_ZONE, ""),
+                ),
+                errors=errors,
+            )
+
+        return self.async_show_form(
+            step_id="add_static",
+            data_schema=_static_schema(),
+        )
 
     async def async_step_add_tracked(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle adding a tracked device in options."""
-        return await self._handle_add_tracked(user_input)
-
-    async def _handle_add_static(self, user_input: dict[str, Any] | None) -> ConfigFlowResult:
-        """Shared static location logic between setup and options."""
-        errors: dict[str, str] = {}
-
+        """Handle adding a tracked device."""
         if user_input is not None:
-            name = user_input[CONF_LOCATION_NAME]
-            mode = user_input[CONF_LOCATION_MODE]
-            source = user_input.get("source", "manual_gps")
-            zone_str = ""
-            gps = ""
-
-            if source == "ha_zone":
-                ha_zone = user_input.get("ha_zone", "(none)")
-                if ha_zone == "(none)":
-                    errors["ha_zone"] = "no_zone_selected"
-                else:
-                    state = self.hass.states.get(ha_zone)
-                    if state and "latitude" in state.attributes and "longitude" in state.attributes:
-                        gps = f"{state.attributes['latitude']},{state.attributes['longitude']}"
-                    else:
-                        errors["ha_zone"] = "zone_no_gps"
-
-            if source == "manual_gps":
-                gps = user_input.get(CONF_LOCATION_GPS, "").replace(" ", "")
-
-            if not errors:
-                if mode == LOCATION_MODE_ZONE and gps:
-                    instance_id = await async_get_instance_id(self.hass)
-                    user_agent = USER_AGENT.format(instance_id)
-                    session = async_get_clientsession(self.hass)
-                    lat_str, lon_str = gps.split(",")
-                    zones = await resolve_zones(session, user_agent, float(lat_str), float(lon_str))
-                    if zones:
-                        zone_str = ",".join(zones)
-                    else:
-                        errors["base"] = "zone_resolve_failed"
-
-                if mode == LOCATION_MODE_ZONE and not gps and not zone_str:
-                    if source == "manual_zone":
-                        zone_str = user_input.get(CONF_LOCATION_ZONE, "").replace(" ", "")
-                    if not zone_str:
-                        errors["base"] = "no_zone_or_gps"
-
-            if not errors:
-                if source == "manual_zone":
-                    zone_str = user_input.get(CONF_LOCATION_ZONE, "").replace(" ", "")
-
-                location: dict[str, Any] = {
-                    CONF_LOCATION_NAME: name,
-                    CONF_LOCATION_TYPE: LOCATION_TYPE_STATIC,
-                    CONF_LOCATION_MODE: mode,
-                    CONF_LOCATION_GPS: gps,
-                    CONF_LOCATION_ZONE: zone_str,
-                }
-                if source == "ha_zone":
-                    location["ha_zone"] = user_input.get("ha_zone", "")
+            location, errors = _validate_tracked(self.hass, user_input)
+            if location:
                 self._locations.append(location)
                 return await self.async_step_init()
-
-        source_options = [
-            SelectOptionDict(value="ha_zone", label="Home Assistant zone"),
-            SelectOptionDict(value="manual_gps", label="Manual GPS coordinates"),
-            SelectOptionDict(value="manual_zone", label="Manual NWS zone IDs"),
-        ]
-        mode_options = [
-            SelectOptionDict(value=LOCATION_MODE_ZONE, label="Zone mode (broader coverage)"),
-            SelectOptionDict(value=LOCATION_MODE_POINT, label="Point mode (precise location)"),
-        ]
-
-        schema_dict: dict[vol.Marker, Any] = {
-            vol.Required(CONF_LOCATION_NAME): str,
-            vol.Required("source", default="ha_zone"): SelectSelector(
-                SelectSelectorConfig(options=source_options)
-            ),
-            vol.Required(CONF_LOCATION_MODE, default=LOCATION_MODE_ZONE): SelectSelector(
-                SelectSelectorConfig(options=mode_options)
-            ),
-            vol.Optional(CONF_LOCATION_GPS, default=""): str,
-            vol.Optional(CONF_LOCATION_ZONE, default=""): str,
-            vol.Optional("ha_zone", default="(none)"): EntitySelector(
-                EntitySelectorConfig(domain="zone")
-            ),
-        }
-
-        return self.async_show_form(
-            step_id="add_static",
-            data_schema=vol.Schema(schema_dict),
-            errors=errors,
-        )
-
-    async def _handle_add_tracked(self, user_input: dict[str, Any] | None) -> ConfigFlowResult:
-        """Shared tracked location logic between setup and options."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            name = user_input[CONF_LOCATION_NAME]
-            tracker = user_input.get(CONF_LOCATION_TRACKER, "(none)")
-            mode = user_input[CONF_LOCATION_MODE]
-
-            if tracker == "(none)":
-                errors["tracker"] = "no_tracker_selected"
-            else:
-                state = self.hass.states.get(tracker)
-                if state is None:
-                    errors["tracker"] = "tracker_not_found"
-
-            if not errors:
-                location: dict[str, Any] = {
-                    CONF_LOCATION_NAME: name,
-                    CONF_LOCATION_TYPE: LOCATION_TYPE_TRACKED,
-                    CONF_LOCATION_MODE: mode,
-                    CONF_LOCATION_GPS: "",
-                    CONF_LOCATION_ZONE: "",
-                    CONF_LOCATION_TRACKER: tracker,
-                }
-                self._locations.append(location)
-                return await self.async_step_init()
-
-        tracker_entities = _get_tracker_entities(self.hass)
-        mode_options = [
-            SelectOptionDict(value=LOCATION_MODE_ZONE, label="Zone mode (broader coverage)"),
-            SelectOptionDict(value=LOCATION_MODE_POINT, label="Point mode (precise location)"),
-        ]
-
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_LOCATION_NAME): str,
-                vol.Required(CONF_LOCATION_TRACKER, default="(none)"): vol.In(tracker_entities),
-                vol.Required(CONF_LOCATION_MODE, default=LOCATION_MODE_ZONE): SelectSelector(
-                    SelectSelectorConfig(options=mode_options)
-                ),
-            }
-        )
+            return self.async_show_form(
+                step_id="add_tracked",
+                data_schema=_tracked_schema(),
+                errors=errors,
+            )
 
         return self.async_show_form(
             step_id="add_tracked",
-            data_schema=schema,
-            errors=errors,
+            data_schema=_tracked_schema(),
+        )
+
+    async def async_step_edit_location(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle selecting a location to edit."""
+        if not self._locations:
+            return await self.async_step_init()
+
+        if user_input is not None and "location_index" in user_input:
+            idx = int(user_input["location_index"])
+            if idx < 0 or idx >= len(self._locations):
+                return await self.async_step_init()
+            self._edit_index = idx
+            loc = self._locations[idx]
+            if loc[CONF_LOCATION_TYPE] == LOCATION_TYPE_STATIC:
+                return self.async_show_form(
+                    step_id="edit_static",
+                    data_schema=_static_schema(
+                        ha_zone_default=loc.get(CONF_LOCATION_HA_ZONE),
+                        mode_default=loc[CONF_LOCATION_MODE],
+                        zone_default=loc.get(CONF_LOCATION_ZONE, ""),
+                    ),
+                )
+            return self.async_show_form(
+                step_id="edit_tracked",
+                data_schema=_tracked_schema(
+                    tracker_default=loc.get(CONF_LOCATION_TRACKER),
+                    mode_default=loc[CONF_LOCATION_MODE],
+                ),
+            )
+
+        return self.async_show_form(
+            step_id="edit_location",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("location_index"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=_location_select_options(self.hass, self._locations)
+                        )
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_edit_static(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle editing a static location."""
+        idx = self._edit_index
+        if idx < 0 or idx >= len(self._locations):
+            return await self.async_step_init()
+
+        if user_input is not None:
+            location, errors, form_data = await _validate_static(self.hass, user_input)
+            if location:
+                self._locations[idx] = location
+                return await self.async_step_init()
+            return self.async_show_form(
+                step_id="edit_static",
+                data_schema=_static_schema(
+                    ha_zone_default=form_data.get(CONF_LOCATION_HA_ZONE),
+                    mode_default=form_data.get(CONF_LOCATION_MODE, LOCATION_MODE_ZONE),
+                    zone_default=form_data.get(CONF_LOCATION_ZONE, ""),
+                ),
+                errors=errors,
+            )
+
+        return await self.async_step_init()
+
+    async def async_step_edit_tracked(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle editing a tracked device."""
+        idx = self._edit_index
+        if idx < 0 or idx >= len(self._locations):
+            return await self.async_step_init()
+
+        if user_input is not None:
+            location, errors = _validate_tracked(self.hass, user_input)
+            if location:
+                self._locations[idx] = location
+                return await self.async_step_init()
+            return self.async_show_form(
+                step_id="edit_tracked",
+                data_schema=_tracked_schema(
+                    tracker_default=self._locations[idx].get(CONF_LOCATION_TRACKER),
+                    mode_default=self._locations[idx][CONF_LOCATION_MODE],
+                ),
+                errors=errors,
+            )
+
+        return await self.async_step_init()
+
+    async def async_step_remove_location(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle removing a location."""
+        if not self._locations:
+            return await self.async_step_init()
+
+        if user_input is not None and "location_index" in user_input:
+            idx = int(user_input["location_index"])
+            if 0 <= idx < len(self._locations):
+                self._locations.pop(idx)
+            return await self.async_step_init()
+
+        return self.async_show_form(
+            step_id="remove_location",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("location_index"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=_location_select_options(self.hass, self._locations)
+                        )
+                    ),
+                }
+            ),
         )

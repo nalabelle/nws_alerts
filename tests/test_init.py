@@ -19,7 +19,7 @@ async def test_setup_entry(hass, mock_api, caplog):
             domain=DOMAIN,
             title="WX Watcher",
             data=CONFIG_DATA,
-            version=3,
+            version=4,
         )
 
         entry.add_to_hass(hass)
@@ -37,7 +37,7 @@ async def test_unload_entry(hass, mock_api):
         domain=DOMAIN,
         title="WX Watcher",
         data=CONFIG_DATA,
-        version=3,
+        version=4,
     )
 
     entry.add_to_hass(hass)

@@ -24,10 +24,8 @@ Derived code by file:
     alert field extraction from NWS API responses (from finity69x2/nws_alerts)
   - coordinator.py: DataUpdateCoordinator structure, _async_update_data pattern
     with async_timeout + UpdateFailed, _get_tracker_gps (from finity69x2/nws_alerts)
-  - config_flow.py: ConfigFlow/OptionsFlow class pattern, tracker entity listing
-    (from finity69x2/nws_alerts)
   - sensor.py: SENSOR_TYPES dict, CoordinatorEntity class structure, state/
-    extra_state_attributes/device_info properties, async_setup_entry pattern
+    device_info properties, async_setup_entry pattern
     (from finity69x2/nws_alerts)
   - manifest.json: structure and field names (from finity69x2/nws_alerts)
 

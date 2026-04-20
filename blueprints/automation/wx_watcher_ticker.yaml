@@ -1,0 +1,165 @@
+blueprint:
+  name: WX Watcher → Ticker
+  description: >-
+    Routes WX Watcher alert notifications based on static locations (HA zones)
+    and tracked devices.
+
+    Configure which zones and devices to monitor, and where to send
+    notifications. Import multiple times for different users or notification
+    targets — e.g., one instance for your phone, another for a family member.
+
+    The integration automatically skips NWS queries for tracked devices that
+    are currently inside a configured static location's HA zone, since the
+    zone query is a superset. No duplicate queries or redundant notifications.
+
+    - **Warning** alerts (🔴) use the warning category
+    - **Watch** alerts (🟡) use the watch category
+    - **Advisory** and other alerts (🔵) use the advisory category
+    - Cleared alerts send a clear message to dismiss the notification
+
+    Notifications are deduplicated by alert ID using tags.
+
+    Designed for [Ticker](https://github.com/analytix-energy-solutions/ticker). Category
+    names must match your Ticker category names or IDs.
+  domain: automation
+  source_url: https://github.com/nalabelle/wx_watcher/blob/main/blueprints/automation/wx_watcher_ticker.yaml
+  author: nalabelle
+  homeassistant:
+    min_version: 2026.2.0
+  input:
+    conditions_section:
+      name: Conditions
+      icon: mdi:filter
+      input:
+        static_locations:
+          name: Static Locations
+          description: >-
+            One or more HA zones to monitor. Alerts fire when any of these
+            zones appear in the alert's sources, or when a tracked device's
+            location appears in the sources.
+          selector:
+            entity:
+              filter:
+                domain: zone
+              multiple: true
+        tracked_devices:
+          name: Tracked Devices
+          description: >-
+            One or more device trackers to follow. Alerts also fire when any
+            of these devices' locations appear in the alert's sources.
+            Devices inside a static location's HA zone are automatically
+            skipped by the integration.
+          selector:
+            entity:
+              filter:
+                domain: device_tracker
+              multiple: true
+    notification_section:
+      name: Notification
+      icon: mdi:bell
+      input:
+        warning_category:
+          name: Warning Category
+          default: Weather Warning
+          selector:
+            text:
+        watch_category:
+          name: Watch Category
+          default: Weather Watch
+          selector:
+            text:
+        advisory_category:
+          name: Advisory Category
+          default: Weather Advisory
+          selector:
+            text:
+
+variables:
+  static_locations: !input static_locations
+  tracked_devices: !input tracked_devices
+  warning_category: !input warning_category
+  watch_category: !input watch_category
+  advisory_category: !input advisory_category
+
+mode: queued
+max: 10
+
+triggers:
+  - trigger: event
+    event_type: wx_watcher_alert_created
+  - trigger: event
+    event_type: wx_watcher_alert_updated
+  - trigger: event
+    event_type: wx_watcher_alert_cleared
+
+conditions:
+  - condition: template
+    value_template: >-
+      {{ trigger.event.data.sources | map(attribute='ha_zone') | list
+            | select('in', static_locations) | list | count > 0
+          or trigger.event.data.sources | map(attribute='tracker') | list
+            | select('in', tracked_devices) | list | count > 0 }}
+
+actions:
+  - if:
+      - condition: template
+        value_template: >-
+          {{ trigger.event.event_type == 'wx_watcher_alert_cleared' }}
+    then:
+      - action: ticker.notify
+        data:
+          message: clear_notification
+          data:
+            tag: wx_{{ trigger.event.data.ID }}
+    else:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ 'Warning' in trigger.event.data.Event }}
+            sequence:
+              - action: ticker.notify
+                data:
+                  category: "{{ warning_category }}"
+                  title: >-
+                    🔴 {{ 'Updated' if trigger.event.event_type ==
+                      'wx_watcher_alert_updated' else 'New' }}:
+                      {{ trigger.event.data.Event }}
+                  message: >-
+                    {{ trigger.event.data.Headline }}{% if
+                      trigger.event.data.Instruction %}
+                      {{ trigger.event.data.Instruction }}{% endif %}
+                  data:
+                    tag: wx_{{ trigger.event.data.ID }}
+                    url: "{{ trigger.event.data.URL }}"
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ 'Watch' in trigger.event.data.Event }}
+            sequence:
+              - action: ticker.notify
+                data:
+                  category: "{{ watch_category }}"
+                  title: >-
+                    🟡 {{ 'Updated' if trigger.event.event_type ==
+                      'wx_watcher_alert_updated' else 'New' }}:
+                      {{ trigger.event.data.Event }}
+                  message: >-
+                    {{ trigger.event.data.Headline }}{% if
+                      trigger.event.data.Instruction %}
+                      {{ trigger.event.data.Instruction }}{% endif %}
+                  data:
+                    tag: wx_{{ trigger.event.data.ID }}
+                    url: "{{ trigger.event.data.URL }}"
+        default:
+          - action: ticker.notify
+            data:
+              category: "{{ advisory_category }}"
+              title: "🔵 {{ trigger.event.data.Event }}"
+              message: >-
+                {{ trigger.event.data.Headline }}{% if
+                  trigger.event.data.Instruction %}
+                  {{ trigger.event.data.Instruction }}{% endif %}
+              data:
+                tag: wx_{{ trigger.event.data.ID }}
+                url: "{{ trigger.event.data.URL }}"

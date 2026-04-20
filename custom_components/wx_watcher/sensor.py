@@ -3,7 +3,8 @@
 # Derived in part from nws_alerts by finity69x2
 # (https://github.com/finity69x2/nws_alerts).
 # Sensor class structure, SENSOR_TYPES pattern, and setup pattern originate
-# from the upstream sensor module. See NOTICE for details.
+# from the upstream sensor module. The extra_state_attributes property was
+# rewritten in v8 for entity-based locations. See NOTICE for details.
 # As upstream-derived code is rewritten or removed, this comment should
 # be updated or removed accordingly.
 
@@ -51,6 +52,7 @@ class WXWatcherSensor(CoordinatorEntity):
         super().__init__(hass.data[DOMAIN][entry.entry_id][COORDINATOR])
         self._config = entry
         self._key = sensor_description.key
+        self._hass = hass
 
         self._attr_icon = sensor_description.icon
         self._attr_name = f"{entry.data.get(CONF_NAME, DOMAIN)} {sensor_description.name}"
@@ -77,14 +79,18 @@ class WXWatcherSensor(CoordinatorEntity):
 
         locations = self._config.data.get(CONF_LOCATIONS, [])
         if locations:
-            attrs["locations"] = [
-                {
-                    "name": loc.get("name", ""),
-                    "type": loc.get("type", ""),
-                    "mode": loc.get("mode", ""),
-                }
-                for loc in locations
-            ]
+            attrs["locations"] = []
+            for loc in locations:
+                entity_id = loc.get("ha_zone") or loc.get("tracker", "")
+                state = self._hass.states.get(entity_id)
+                attrs["locations"].append(
+                    {
+                        "entity": entity_id,
+                        "name": state.name if state else entity_id,
+                        "type": loc.get("type", ""),
+                        "mode": loc.get("mode", ""),
+                    }
+                )
 
         attrs[ATTR_ATTRIBUTION] = ATTRIBUTION
         return attrs

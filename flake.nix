@@ -127,7 +127,10 @@
               };
               check-json.enable = true;
               check-toml.enable = true;
-              check-yaml.enable = true;
+              check-yaml = {
+                enable = true;
+                excludes = [ "blueprints/" ];
+              };
               yamllint = {
                 enable = true;
                 entry = lib.mkForce "${yamllintWrapper}/bin/yamllint-wrapper";
