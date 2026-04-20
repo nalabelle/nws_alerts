@@ -201,6 +201,10 @@
               python313
               uv
             ];
+
+            shellHook = ''
+              uv sync --frozen --group test --group dev
+            '';
           };
         };
     };

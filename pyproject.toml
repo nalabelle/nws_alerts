@@ -21,6 +21,8 @@ python-downloads = "manual"
 [tool.mypy]
 platform = "linux"
 python_version = "3.13"
+explicit_package_bases = true
+mypy_path = "."
 follow_imports = "silent"
 ignore_missing_imports = true
 check_untyped_defs = true
