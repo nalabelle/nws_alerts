@@ -38,15 +38,15 @@
           "mode": "Query mode"
         }
       }
+    },
+    "error": {
+      "no_zone_or_gps": "Zone mode requires either GPS coordinates (for auto-resolution) or manual zone IDs",
+      "zone_resolve_failed": "Could not resolve GPS coordinates to NWS zones",
+      "zone_no_gps": "Selected zone does not have GPS coordinates",
+      "no_zone_selected": "No zone selected",
+      "no_tracker_selected": "No device tracker selected",
+      "tracker_not_found": "Device tracker not found"
     }
-  },
-  "error": {
-    "no_zone_or_gps": "Zone mode requires either GPS coordinates (for auto-resolution) or manual zone IDs",
-    "zone_resolve_failed": "Could not resolve GPS coordinates to NWS zones",
-    "zone_no_gps": "Selected zone does not have GPS coordinates",
-    "no_zone_selected": "No zone selected",
-    "no_tracker_selected": "No device tracker selected",
-    "tracker_not_found": "Device tracker not found"
   },
   "options": {
     "step": {
@@ -78,6 +78,14 @@
           "mode": "Query mode"
         }
       }
+    },
+    "error": {
+      "no_zone_or_gps": "Zone mode requires either GPS coordinates (for auto-resolution) or manual zone IDs",
+      "zone_resolve_failed": "Could not resolve GPS coordinates to NWS zones",
+      "zone_no_gps": "Selected zone does not have GPS coordinates",
+      "no_zone_selected": "No zone selected",
+      "no_tracker_selected": "No device tracker selected",
+      "tracker_not_found": "Device tracker not found"
     }
   }
 }

@@ -154,6 +154,7 @@
                 enable = true;
                 entry = "${forbidBinaryScript}/bin/forbid-binary";
                 types = [ "binary" ];
+                excludes = [ "brand/icon\\.png$" ];
                 language = "system";
               };
               script-must-have-extension = {
@@ -201,6 +202,10 @@
               python313
               uv
             ];
+
+            shellHook = ''
+              uv sync --frozen --group test --group dev
+            '';
           };
         };
     };
