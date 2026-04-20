@@ -57,7 +57,7 @@ async def _setup_entry(hass, mock_aioclient, config_data, entry_title="WX Watche
         domain=DOMAIN,
         title=entry_title,
         data=config_data,
-        version=3,
+        version=4,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -127,8 +127,8 @@ class TestFirstPoll:
 
         heat_event = [e for e in events if e.data["ID"] == HEAT_ALERT_ID][0]
         sources = heat_event.data["sources"]
-        source_names = {s["location"] for s in sources}
-        assert "Home" in source_names
+        ha_zones = {s["ha_zone"] for s in sources if "ha_zone" in s}
+        assert "zone.home" in ha_zones
 
 
 class TestSecondPollNoChanges:
@@ -300,7 +300,7 @@ class TestPointMode:
         assert len(created) == 2
         for e in created:
             sources = e.data["sources"]
-            assert any(s["location"] == "Home" and s["mode"] == "point" for s in sources)
+            assert any(s.get("ha_zone") == "zone.home" and s["mode"] == "point" for s in sources)
 
 
 def load_fixture(filename):

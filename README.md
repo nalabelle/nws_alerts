@@ -6,9 +6,9 @@ A Home Assistant custom integration for monitoring weather alerts from the US Na
 
 ## Features
 
-- **Multi-location monitoring** — configure multiple static locations (home, work, school) and tracked devices (phone, car) in a single config entry
-- **Zone and point modes** — each location uses zone queries (broader coverage) or point queries (precise, polygon-based) based on your preference
-- **Automatic zone resolution** — GPS coordinates or Home Assistant zones are automatically resolved to NWS forecast, county, and fire weather zones
+- **Entity-based locations** — static locations are HA zones, tracked locations are device trackers
+- **Automatic zone resolution** — NWS zone IDs are auto-resolved from zone GPS coordinates and editable
+- **Tracker skip optimization** — tracked devices inside a static location's HA zone are skipped (zone query is a superset)
 - **Deduplicated alerts** — same alert observed from multiple locations fires one event, with a `sources` list showing which locations detected it
 - **Combined zone queries** — all zone-mode locations are queried in a single API call, minimizing NWS API usage
 - **Event-driven architecture** — fires `wx_watcher_alert_created`, `wx_watcher_alert_updated`, `wx_watcher_alert_cleared`, and `wx_watcher_alert_stale_data` events for precise automation triggers
@@ -35,18 +35,15 @@ Go to **Settings → Devices & Services → Add Integration** and search for "WX
 
 1. **Name & Settings** — Enter a name (e.g., "WX Watcher"), update interval, and timeout
 2. **Locations Hub** — Add static locations or tracked devices, or finish setup
-3. **Add Static Location** — Choose from:
-   - **Home Assistant zone** — pick a zone from your HA config (auto-resolves GPS and NWS zones)
-   - **Manual GPS** — enter latitude,longitude coordinates
-   - **Manual zone IDs** — enter NWS zone/county codes directly
+3. **Add Static Location** — Select an HA zone. NWS zone IDs are automatically resolved. You can edit them after resolution.
 4. **Add Tracked Device** — Select a device tracker entity and choose zone or point mode
 
 ### Location Types
 
-| Type        | Description                                          |
-| ----------- | ---------------------------------------------------- |
-| **Static**  | Always-monitored fixed location (home, work, school) |
-| **Tracked** | Follows a device_tracker entity (phone, car)         |
+| Type        | Description                                   |
+| ----------- | --------------------------------------------- |
+| **Static**  | Always-monitored HA zone (home, work, school) |
+| **Tracked** | Follows a device_tracker entity (phone, car)  |
 
 ### Query Modes
 
@@ -70,28 +67,28 @@ Events are fired for each unique alert (deduplicated across locations):
 
 Each event carries these fields:
 
-| Field                                           | Description                                                                                    |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `Event`                                         | Alert type (e.g., "Excessive Heat Warning")                                                    |
-| `ID`                                            | Stable UUID for the alert                                                                      |
-| `URL`                                           | NWS alert URL                                                                                  |
-| `Headline`                                      | NWS headline text                                                                              |
-| `Type`                                          | Alert type (Alert, Update, Cancel, etc.)                                                       |
-| `NWSCode`                                       | NWS event code                                                                                 |
-| `Status`                                        | Alert status                                                                                   |
-| `Severity`                                      | Severity level                                                                                 |
-| `Certainty`                                     | Certainty level                                                                                |
-| `Urgency`                                       | Urgency level                                                                                  |
-| `Response`                                      | Recommended response                                                                           |
-| `AreasAffected`                                 | Area description                                                                               |
-| `Description`                                   | Full alert description                                                                         |
-| `Instruction`                                   | Recommended actions                                                                            |
-| `Sent`, `Onset`, `Expires`, `Ends`, `Effective` | Timestamps                                                                                     |
-| `VTEC`, `VTECAction`                            | VTEC codes                                                                                     |
-| `References`                                    | Referenced previous alerts                                                                     |
-| `SenderName`                                    | Issuing NWS office                                                                             |
-| `config_entry_id`                               | Config entry that fired the event                                                              |
-| `sources`                                       | List of `{"location": "...", "mode": "..."}` dicts showing which locations observed this alert |
+| Field                                           | Description                                                                                                                                |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Event`                                         | Alert type (e.g., "Excessive Heat Warning")                                                                                                |
+| `ID`                                            | Stable UUID for the alert                                                                                                                  |
+| `URL`                                           | NWS alert URL                                                                                                                              |
+| `Headline`                                      | NWS headline text                                                                                                                          |
+| `Type`                                          | Alert type (Alert, Update, Cancel, etc.)                                                                                                   |
+| `NWSCode`                                       | NWS event code                                                                                                                             |
+| `Status`                                        | Alert status                                                                                                                               |
+| `Severity`                                      | Severity level                                                                                                                             |
+| `Certainty`                                     | Certainty level                                                                                                                            |
+| `Urgency`                                       | Urgency level                                                                                                                              |
+| `Response`                                      | Recommended response                                                                                                                       |
+| `AreasAffected`                                 | Area description                                                                                                                           |
+| `Description`                                   | Full alert description                                                                                                                     |
+| `Instruction`                                   | Recommended actions                                                                                                                        |
+| `Sent`, `Onset`, `Expires`, `Ends`, `Effective` | Timestamps                                                                                                                                 |
+| `VTEC`, `VTECAction`                            | VTEC codes                                                                                                                                 |
+| `References`                                    | Referenced previous alerts                                                                                                                 |
+| `SenderName`                                    | Issuing NWS office                                                                                                                         |
+| `config_entry_id`                               | Config entry that fired the event                                                                                                          |
+| `sources`                                       | List of source dicts. Static: `{"ha_zone": "zone.home", "mode": "zone"}`. Tracked: `{"tracker": "device_tracker.phone", "mode": "point"}`. |
 
 ### Automation Example
 
@@ -103,6 +100,11 @@ automation:
     trigger:
       - trigger: event
         event_type: wx_watcher_alert_created
+    condition:
+      - condition: template
+        value_template: >-
+          {{ 'zone.home' in
+            (trigger.event.data.sources | map(attribute='ha_zone') | list) }}
     action:
       - action: notify.mobile_phone
         data:
@@ -112,6 +114,36 @@ automation:
             url: "{{ trigger.event.data.URL }}"
 ```
 
+## Blueprints
+
+### WX Watcher → Ticker
+
+An automation blueprint that routes WX Watcher alert notifications based on
+static locations (HA zones) and tracked devices. Import multiple times for
+different users or notification targets.
+
+The integration automatically skips NWS queries for tracked devices that are
+currently inside a configured static location's HA zone, since the zone query
+is a superset. No duplicate queries or redundant notifications.
+
+**Import:** Paste this URL in **Settings → Automations & scenes → Blueprints → Import Blueprint**:
+
+```
+https://github.com/nalabelle/wx_watcher/blob/main/blueprints/automation/wx_watcher_ticker.yaml
+```
+
+To update, re-import the blueprint from the same URL.
+
+**Inputs:**
+
+| Input             | Description                                                |
+| ----------------- | ---------------------------------------------------------- |
+| Static Locations  | One or more HA zones to monitor                            |
+| Tracked Devices   | One or more device tracker entities to follow              |
+| Warning Category  | Category for Warning alerts (default: `Weather Warning`)   |
+| Watch Category    | Category for Watch alerts (default: `Weather Watch`)       |
+| Advisory Category | Category for Advisory alerts (default: `Weather Advisory`) |
+
 ## Sensors
 
 | Entity                           | State                            | Attributes                                                                           |
@@ -119,15 +151,14 @@ automation:
 | `sensor.wx_watcher_alerts`       | Number of active alerts          | `Alerts` (full list with sources), `locations` (configured locations), `attribution` |
 | `sensor.wx_watcher_last_updated` | Last successful update timestamp | `attribution`                                                                        |
 
-## Breaking Changes from nws_alerts v6
-
-WX Watcher is a complete redesign. If you were using the `nws_alerts` integration:
+## Breaking Changes from v7
 
 - **You must delete your old config entries and reconfigure** — the data model is incompatible
-- The domain changed from `nws_alerts to `wx_watcher` — all entity IDs change
-- Event names changed from `nws_alerts_alert_*` to `wx_watcher_alert_*`
-- Event data no longer includes `config_name`; it now includes `sources`
-- The old per-entry dedup automation condition (`config_name != 'NWS Alerts Phone'`) is no longer needed
+- Location names removed — locations are now defined by HA zone entities (static) or device tracker entities (tracked)
+- Event source data uses `ha_zone` and `tracker` keys instead of `location`
+- Manual GPS and manual NWS zone ID source options removed — all static locations start from an HA zone
+- NWS zone IDs are auto-resolved but editable
+- Tracked devices inside a static location's HA zone are automatically skipped (zone query is a superset)
 
 ## Attribution
 

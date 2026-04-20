@@ -54,6 +54,31 @@ def mock_aioclient():
         yield m
 
 
+@pytest.fixture(autouse=True)
+def mock_zones(hass):
+    """Mock HA zone entities for tests."""
+    hass.states.async_set(
+        "zone.home",
+        0,
+        {
+            "latitude": 33.25,
+            "longitude": -112.30,
+            "friendly_name": "Home",
+            "radius": 100,
+        },
+    )
+    hass.states.async_set(
+        "zone.work",
+        0,
+        {
+            "latitude": 33.45,
+            "longitude": -112.06,
+            "friendly_name": "Work",
+            "radius": 100,
+        },
+    )
+
+
 def get_fixture_path(filename: str, integration: str | None = None) -> pathlib.Path:
     """Get path of fixture."""
     if integration is None and "/" in filename and not filename.startswith("helpers/"):

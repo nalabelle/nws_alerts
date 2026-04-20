@@ -12,39 +12,64 @@
       },
       "locations": {
         "title": "Locations",
-        "description": "Current locations: {location_list}\n\nAdd a location or finish setup.",
+        "description": "Current locations: {location_list}\n\nAdd, edit, or remove a location, or finish setup.",
         "data": {
           "action": "What would you like to do?"
         }
       },
       "add_static": {
         "title": "Add Static Location",
-        "description": "Add a fixed location that is always monitored. Zone mode includes all alerts listed for your NWS zone (broader coverage). Point mode only includes alerts whose polygon covers your exact coordinates (more precise).",
+        "description": "Select an HA zone to monitor. NWS zone IDs are automatically resolved from the zone's GPS coordinates. You can edit them after resolution.",
         "data": {
-          "name": "Location name",
-          "source": "How to specify location",
+          "ha_zone": "Home Assistant zone",
           "mode": "Query mode",
-          "gps": "GPS coordinates (lat,lon)",
-          "zone": "NWS Zone ID(s) — comma-separated",
-          "ha_zone": "Home Assistant zone"
+          "zone": "NWS Zone IDs (auto-resolved)"
         }
       },
       "add_tracked": {
         "title": "Add Tracked Device",
-        "description": "Add a device tracker to receive alerts for wherever the device is located.",
+        "description": "Select a device tracker to receive alerts wherever the device is located.",
         "data": {
-          "name": "Location name",
           "tracker": "Device tracker",
           "mode": "Query mode"
+        }
+      },
+      "edit_location": {
+        "title": "Edit Location",
+        "description": "Select a location to edit.",
+        "data": {
+          "location_index": "Location"
+        }
+      },
+      "edit_static": {
+        "title": "Edit Static Location",
+        "description": "Edit the HA zone and query mode. NWS zone IDs are automatically resolved from the zone's GPS coordinates.",
+        "data": {
+          "ha_zone": "Home Assistant zone",
+          "mode": "Query mode",
+          "zone": "NWS Zone IDs (auto-resolved)"
+        }
+      },
+      "edit_tracked": {
+        "title": "Edit Tracked Device",
+        "description": "Edit the device tracker and query mode.",
+        "data": {
+          "tracker": "Device tracker",
+          "mode": "Query mode"
+        }
+      },
+      "remove_location": {
+        "title": "Remove Location",
+        "description": "Select a location to remove.",
+        "data": {
+          "location_index": "Location"
         }
       }
     },
     "error": {
-      "no_zone_or_gps": "Zone mode requires either GPS coordinates (for auto-resolution) or manual zone IDs",
       "zone_resolve_failed": "Could not resolve GPS coordinates to NWS zones",
       "zone_no_gps": "Selected zone does not have GPS coordinates",
       "no_zone_selected": "No zone selected",
-      "no_tracker_selected": "No device tracker selected",
       "tracker_not_found": "Device tracker not found"
     }
   },
@@ -52,39 +77,64 @@
     "step": {
       "init": {
         "title": "WX Watcher Options",
-        "description": "Current locations: {location_list}\n\nAdd a location or save changes.",
+        "description": "Current locations: {location_list}\n\nAdd, edit, or remove a location, or save changes.",
         "data": {
           "action": "What would you like to do?"
         }
       },
       "add_static": {
         "title": "Add Static Location",
-        "description": "Add a fixed location that is always monitored.",
+        "description": "Select an HA zone to monitor. NWS zone IDs are automatically resolved from the zone's GPS coordinates. You can edit them after resolution.",
         "data": {
-          "name": "Location name",
-          "source": "How to specify location",
+          "ha_zone": "Home Assistant zone",
           "mode": "Query mode",
-          "gps": "GPS coordinates (lat,lon)",
-          "zone": "NWS Zone ID(s) — comma-separated",
-          "ha_zone": "Home Assistant zone"
+          "zone": "NWS Zone IDs (auto-resolved)"
         }
       },
       "add_tracked": {
         "title": "Add Tracked Device",
-        "description": "Add a device tracker to receive alerts for wherever the device is located.",
+        "description": "Select a device tracker to receive alerts wherever the device is located.",
         "data": {
-          "name": "Location name",
           "tracker": "Device tracker",
           "mode": "Query mode"
+        }
+      },
+      "edit_location": {
+        "title": "Edit Location",
+        "description": "Select a location to edit.",
+        "data": {
+          "location_index": "Location"
+        }
+      },
+      "edit_static": {
+        "title": "Edit Static Location",
+        "description": "Edit the HA zone and query mode. NWS zone IDs are automatically resolved from the zone's GPS coordinates.",
+        "data": {
+          "ha_zone": "Home Assistant zone",
+          "mode": "Query mode",
+          "zone": "NWS Zone IDs (auto-resolved)"
+        }
+      },
+      "edit_tracked": {
+        "title": "Edit Tracked Device",
+        "description": "Edit the device tracker and query mode.",
+        "data": {
+          "tracker": "Device tracker",
+          "mode": "Query mode"
+        }
+      },
+      "remove_location": {
+        "title": "Remove Location",
+        "description": "Select a location to remove.",
+        "data": {
+          "location_index": "Location"
         }
       }
     },
     "error": {
-      "no_zone_or_gps": "Zone mode requires either GPS coordinates (for auto-resolution) or manual zone IDs",
       "zone_resolve_failed": "Could not resolve GPS coordinates to NWS zones",
       "zone_no_gps": "Selected zone does not have GPS coordinates",
       "no_zone_selected": "No zone selected",
-      "no_tracker_selected": "No device tracker selected",
       "tracker_not_found": "Device tracker not found"
     }
   }
