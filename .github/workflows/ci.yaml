@@ -9,14 +9,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: cachix/install-nix-action@v31
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - run: nix develop --command make check
-
       - uses: home-assistant/actions/hassfest@master
 
       - uses: hacs/action@main
         with:
           category: integration
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: nix develop --command make check
